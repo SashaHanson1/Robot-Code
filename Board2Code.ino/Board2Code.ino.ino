@@ -75,16 +75,16 @@ const int cSCL               = 48;                    // GPIO pin for I2C clock
 const int cTCSLED            = 14;                    // GPIO pin for LED on TCS34725
 const int cLEDSwitch         = 46;                    // DIP switch S1-2 controls LED on TCS32725   
 
-const int CollectorServoPin       = 40;
-const int ArmServo1_Pin             = 41;
-const int ArmServo2_Pin             = 42;
-//const int AccepterServoPin          = 41;     // Do not think this pin works for servos
-//const int GumballServoPin         = 42;                 // GPIO pin for servo motor
-const int CollectorServoChannel       = 5;
-const int ArmServo1_Channel         = 6;
-const int ArmServo2_Channel         = 7;
-//const int AccepterServoChannel      = 6;                  // PWM channel used for the RC servo motor 
-//const int GumballServoChannel      = 7;                  // PWM channel used for the RC servo motor 
+//const int CollectorServoPin       = 39;
+//const int ArmServo1_Pin             = 40;
+//const int ArmServo2_Pin             = 41;
+const int AccepterServoPin          = 41;     // Do not think this pin works for servos
+const int GumballServoPin         = 42;                 // GPIO pin for servo motor
+//const int CollectorServoChannel       = 4;
+//const int ArmServo1_Channel         = 7;
+//const int ArmServo2_Channel         = 5;
+const int AccepterServoChannel      = 6;                  // PWM channel used for the RC servo motor 
+const int GumballServoChannel      = 7;                  // PWM channel used for the RC servo motor 
 
 const int cRightAdjust = 0;
 const int cLeftAdjust = 2;
@@ -228,22 +228,22 @@ void setup() {
   }
   
   //set up for servo
-  //pinMode(AccepterServoPin, OUTPUT);                      // configure servo GPIO for output
-  //pinMode(GumballServoPin, OUTPUT);
-  pinMode(ArmServo1_Pin, OUTPUT);
-  pinMode(ArmServo2_Pin, OUTPUT);
-  pinMode(CollectorServoPin, OUTPUT);
-  //ledcSetup(AccepterServoChannel, 50, 14);                // setup for channel for 50 Hz, 14-bit resolution
-  //ledcSetup(GumballServoChannel, 50, 14);                // setup for channel for 50 Hz, 14-bit resolution
-  ledcSetup(ArmServo1_Channel, 50, 14);
-  ledcSetup(ArmServo2_Channel, 50, 14);
-  ledcSetup(CollectorServoChannel, 50, 14);
+  pinMode(AccepterServoPin, OUTPUT);                      // configure servo GPIO for output
+  pinMode(GumballServoPin, OUTPUT);
+  //pinMode(ArmServo1_Pin, OUTPUT);
+  //pinMode(ArmServo2_Pin, OUTPUT);
+  //pinMode(CollectorServoPin, OUTPUT);
+  ledcSetup(AccepterServoChannel, 50, 14);                // setup for channel for 50 Hz, 14-bit resolution
+  ledcSetup(GumballServoChannel, 50, 14);                // setup for channel for 50 Hz, 14-bit resolution
+  //ledcSetup(ArmServo1_Channel, 50, 14);
+  //ledcSetup(ArmServo2_Channel, 50, 14);
+  //ledcSetup(CollectorServoChannel, 50, 14);
   
-  //ledcAttachPin(AccepterServoPin, AccepterServoChannel);         // assign servo pin to servo channel
-  //ledcAttachPin(GumballServoPin, GumballServoChannel);
-  ledcAttachPin(CollectorServoPin, CollectorServoChannel);
-  ledcAttachPin(ArmServo1_Pin, ArmServo1_Channel);
-  ledcAttachPin(ArmServo2_Pin, ArmServo2_Channel);
+  ledcAttachPin(AccepterServoPin, AccepterServoChannel);         // assign servo pin to servo channel
+  ledcAttachPin(GumballServoPin, GumballServoChannel);
+  //ledcAttachPin(CollectorServoPin, CollectorServoChannel);
+  //ledcAttachPin(ArmServo1_Pin, ArmServo1_Channel);
+  //ledcAttachPin(ArmServo2_Pin, ArmServo2_Channel);
 
    //set up of push button
   pinMode(0, INPUT_PULLUP);
@@ -419,7 +419,7 @@ void loop() {
 #ifdef PRINT_COLOUR            
             Serial.printf("R: %d, G: %d, B: %d, C %d\n", r, g, b, c);
 #endif
-        
+        /*
         if (currentMillis - delayMillis >= 10) { // only run  after slight delay
           switch(servoCase) {
             case 0: // collector arm base position
@@ -492,7 +492,7 @@ void loop() {
               ledcWrite(ArmServo2_Channel, degreesToDutyCycle(Arm2_Angle));// left servo top position
               break;
           }
-        }
+        } */
         break;
     }
 
