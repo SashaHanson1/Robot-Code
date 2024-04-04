@@ -78,27 +78,31 @@ const int cLEDSwitch         = 46;                    // DIP switch S1-2 control
 const int CollectorServoPin       = 40;
 const int ArmServo1_Pin             = 41;
 const int ArmServo2_Pin             = 42;
-//const int AccepterServoPin          = 41;     // Do not think this pin works for servos
-//const int GumballServoPin         = 42;                 // GPIO pin for servo motor
 const int CollectorServoChannel       = 5;
 const int ArmServo1_Channel         = 6;
 const int ArmServo2_Channel         = 7;
-//const int AccepterServoChannel      = 6;                  // PWM channel used for the RC servo motor 
-//const int GumballServoChannel      = 7;                  // PWM channel used for the RC servo motor 
 
-const int cRightAdjust = 0;
-const int cLeftAdjust = 2;
+int cRightAdjust = 0;
+int cLeftAdjust = 30;
+
 const long cCountsRev = 1096;
 const double distancePerRev = 13.8;  //circumference of the wheels in cm
 
-
+const int cIN1Pin = 35;                   // GPIO pin(s) for IN1
+const int cIN1Chan = 0;                   // PWM channel for IN1
+const int c2IN2Pin = 36;                  // GPIO pin for IN2
+const int cIN2Chan = 1;                   // PWM channel for IN2
+const int cMaxSpeedInCounts = 1600;       // maximum encoder counts/sec
+const float kp = 1.5;                     // proportional gain for PID
+const float ki = 2;                       // integral gain for PID
+const float kd = 0.2;                     // derivative gain for PID
 const float pi = 3.14159;                                                        // pi is used to calculate circumference of a wheel based on its diameter
 const int cDist = cCountsRev / (4.2 * pi);                                      // this is the calculated unit length to travel
 int pauseTime = 0;                                                             // used to determine when to pause the robots motion for a moment after return to its start position
 
 // set servo limits
-const float OpenAngle = 180;
-const float ClosedAngle = 70;
+const float OpenAngle = 167;
+const float ClosedAngle = 66;
 const float LiftedAngle1 = 145;
 const float DroppedAngle1 = 15;
 const float LiftedAngle2 = 0;
@@ -107,12 +111,15 @@ const float DroppedAngle2 = 130;
 float CollectorAngle = OpenAngle; // set the initial open position
 float Arm1_Angle = DroppedAngle1; // set the initial ground position
 float Arm2_Angle = DroppedAngle2; // set the initial ground position
-boolean closing = false;
-boolean opening = false;
-boolean lifting = false;
-boolean dropping = false;
-
+bool closing = false;
+bool opening = false;
+bool lifting = false;
+bool dropping = false;
+bool routeComplete = false;
 int servoCase = 0;
+float length = 250;
+int count = 0;
+boolean reverse = false;
 
 //=====================================================================================================================
 
@@ -149,9 +156,12 @@ unsigned long collectorMillis = 0;
 unsigned long armMillis = 0;
 unsigned long swingingMillis = 0;
 unsigned long delayMillis = 0;
+unsigned long lastTime = 0;                // last time of motor control was updated
+
 bool change = false;
 bool arm = false;// tells us if the collector arm is closed or open
 bool onGround = true;
+int turns = 0;
 
 // Declare SK6812 SMART LED object
 //   Argument 1 = Number of LEDs (pixels) in use
@@ -217,30 +227,15 @@ void setup() {
   pinMode(cTCSLED, OUTPUT);                           // configure GPIO to control LED on TCS34725
   pinMode(cLEDSwitch, INPUT_PULLUP);                  // configure GPIO to set state of TCS34725 LED 
 
-  // Connect to TCS34725 colour sensor
-  if (tcs.begin()) {
-    Serial.printf("Found TCS34725 colour sensor\n");
-    tcsFlag = true;
-  } 
-  else {
-    Serial.printf("No TCS34725 found ... check your connections\n");
-    tcsFlag = false;
-  }
-  
   //set up for servo
-  //pinMode(AccepterServoPin, OUTPUT);                      // configure servo GPIO for output
-  //pinMode(GumballServoPin, OUTPUT);
   pinMode(ArmServo1_Pin, OUTPUT);
   pinMode(ArmServo2_Pin, OUTPUT);
   pinMode(CollectorServoPin, OUTPUT);
-  //ledcSetup(AccepterServoChannel, 50, 14);                // setup for channel for 50 Hz, 14-bit resolution
-  //ledcSetup(GumballServoChannel, 50, 14);                // setup for channel for 50 Hz, 14-bit resolution
+
   ledcSetup(ArmServo1_Channel, 50, 14);
   ledcSetup(ArmServo2_Channel, 50, 14);
   ledcSetup(CollectorServoChannel, 50, 14);
-  
-  //ledcAttachPin(AccepterServoPin, AccepterServoChannel);         // assign servo pin to servo channel
-  //ledcAttachPin(GumballServoPin, GumballServoChannel);
+
   ledcAttachPin(CollectorServoPin, CollectorServoChannel);
   ledcAttachPin(ArmServo1_Pin, ArmServo1_Channel);
   ledcAttachPin(ArmServo2_Pin, ArmServo2_Channel);
@@ -250,8 +245,51 @@ void setup() {
 }
 
 void loop() {
-  long pos[] = { 0, 0 };  // current motor positions
-  int pot = 0;            // raw ADC value from pot
+  float deltaT = 0;     // time interval
+  long pos = 0;         // current motor positions
+  long e = 0;           // position error
+  float ePrev = 0;      // previous position error
+  float dedt = 0;       // rate of change of position error (de/dt)
+  float eIntegral = 0;  // integral of error
+  float u = 0;          // PID control signal
+  int pwm = 0;          // motor speed(s), represented in bit resolution
+  int dir = 1;          // direction that motor should turn
+  // store encoder position to avoid conflicts with ISR updates
+  noInterrupts();     // disable interrupts temporarily while reading
+  pos = ((LeftEncoder.lRawEncoderCount) + (RightEncoder.lRawEncoderCount)) / 2;  // read and store current motor position
+  interrupts();       // turn interrupts back on
+
+  target = length * cDist;
+
+  unsigned long curTime = micros();                  // capture current time in microseconds
+  if (curTime - lastTime > 10000) {                  // wait ~10 ms
+    deltaT = ((float)(curTime - lastTime)) / 1.0e6;  // compute actual time interval in seconds
+    lastTime = curTime;                              // update start time for next control cycle
+    // use PID to calculate control signal to motor
+    e = target - pos;                         // position error
+    dedt = ((float)e - ePrev) / deltaT;       // derivative of error
+    eIntegral = eIntegral + e * deltaT;       // integral of error (finite difference)
+    u = kp * e + kd * dedt + ki * eIntegral;  // compute PID-based control signal
+    ePrev = e;                                // store error for next control cycle
+
+    // set direction based on computed control signal
+    dir = 1;      // default to forward directon
+    if (u < 0) {  // if control signal is negative
+      dir = -1;   // set direction to reverse
+    }
+
+    // set speed based on computed control signal
+    u = fabs(u);                  // get magnitude of control signal
+    if (u > cMaxSpeedInCounts) {  // if control signal will saturate motor
+      u = cMaxSpeedInCounts;      // impose upper limit
+    }
+
+    pwm = map(u, 0, cMaxSpeedInCounts, cMinPWM, cMaxPWM);  // convert control signal to pwm    
+
+    #ifdef SERIAL_STUDIO
+
+    #endif
+  }
   uint16_t r, g, b, c;    // RGBC values from TCS34725
 
   currentMillis = millis();  // Get the current time
@@ -301,7 +339,7 @@ void loop() {
         if (modePBDebounce >= 1025) {           // if pushbutton was released for 25 mS
           modePBDebounce = 0;                   // reset debounce timer count
           robotModeIndex++;                     // switch to next mode
-          robotModeIndex = robotModeIndex & 7;  // keep mode index between 0 and 7
+          robotModeIndex = robotModeIndex & 1;  // keep mode index between 0 and 7
           timerCount3sec = 0;                   // reset 3 second timer count
           timeUp3sec = false;                   // reset 3 second timer
         }
@@ -332,103 +370,60 @@ void loop() {
 
       case 1:              // Run robot
         // Read pot to update drive motor speed
-        pot = analogRead(POT_R1);
-        //leftDriveSpeed = map(pot, 0, 4095, cMinPWM, cMaxPWM) - cLeftAdjust;
-        //rightDriveSpeed = map(pot, 0, 4095, cMinPWM, cMaxPWM) - cRightAdjust;
         leftDriveSpeed = cMaxPWM - cLeftAdjust;
         rightDriveSpeed = cMaxPWM - cRightAdjust;
 #ifdef DEBUG_DRIVE_SPEED
-        Serial.print(F(" Left Drive Speed: Pot R1 = "));
-        Serial.print(pot);
-        Serial.print(F(", mapped = "));
-        Serial.println(leftDriveSpeed);
+
 #endif
 #ifdef DEBUG_ENCODER_COUNT
         if (timeUp200msec) {
           timeUp200msec = false;              // reset 200 ms timer
           LeftEncoder.getEncoderRawCount();   // read left encoder count
           RightEncoder.getEncoderRawCount();  // read right encoder count
-          Serial.print(F("Left Encoder count = "));
-          Serial.print(LeftEncoder.lRawEncoderCount);
-          Serial.print(F("  Right Encoder count = "));
-          Serial.print(RightEncoder.lRawEncoderCount);
-          Serial.print("\n");
-
-          Serial.print("target: ");
-          Serial.println(target);
         }
 #endif
         if (motorsEnabled) {          // run motors only if enabled
           switch (driveIndex) {     // cycle through drive states
             case 0: // stop robot
               Bot.Stop("D1");
-              driveIndex = 1;
+              if (onGround) {
+                driveIndex = 1;
+              }
               break;
 
-            case 1:
+            case 1: // drive forward
               Bot.Forward("D1", rightDriveSpeed, leftDriveSpeed);
-              if (abs(LeftEncoder.lRawEncoderCount) >= cDist * 50) {
+              if (abs(LeftEncoder.lRawEncoderCount) >= cDist * length) {
                 LeftEncoder.clearEncoder();
                 RightEncoder.clearEncoder();
                 driveIndex = 2;
+                reverse = true;
               }
               break;
 
-            case 2:
-              Bot.Right("D1", rightDriveSpeed, leftDriveSpeed);
-              if (abs(LeftEncoder.lRawEncoderCount) >= cDist * 6 * pi) {
+            case 2: // reverse into bin
+              Bot.Reverse("D1", rightDriveSpeed, leftDriveSpeed);
+              cRightAdjust = 5;
+              cLeftAdjust = 0;
+              if (abs(LeftEncoder.lRawEncoderCount) <= cDist * length) {
                 LeftEncoder.clearEncoder();
                 RightEncoder.clearEncoder();
-                if (pauseTime == 4) {
-                  driveIndex = 0;
-                } else {
-                  driveIndex = 1;
-                }
+                motorsEnabled = false; // end drive system as the objective is now complete
               }
-              pauseTime++;
-              break;
           }
         } else {  // stop when motors are disabled
           Bot.Stop("D1");
         }
 
-        // Check if it's time to perform the action
-        if (currentMillis - previousMillis >= 3000) {
-          // Save the last time the action was executed
-          previousMillis = currentMillis;
-          change = true;
-          ledcWrite(AccepterServoChannel, degreesToDutyCycle(90));
-        } else if (change && currentMillis - previousMillis >= 100){
-          ledcWrite(AccepterServoChannel, degreesToDutyCycle(180));
-          change = false;
-        }
-        
-        digitalWrite(cTCSLED, !digitalRead(cLEDSwitch));    // turn on onboard LED if switch state is low (on position)
-        if (tcsFlag) {                                      // if colour sensor initialized
-          tcs.getRawData(&r, &g, &b, &c);                   // get raw RGBC values
-          if (g > r && g > b && g > 60 && g < 90 && c < 200 ){//this indiactes that the color sensor has found a green gem
-            ledcWrite(GumballServoChannel, degreesToDutyCycle(0)); // turn to sorted side
-            newMillis = currentMillis;
-            Serial.printf("green detected");
-
-          } 
-          else if(currentMillis - newMillis >= 250){
-            ledcWrite(GumballServoChannel, degreesToDutyCycle(180));
-          }
-        } 
-#ifdef PRINT_COLOUR            
-            Serial.printf("R: %d, G: %d, B: %d, C %d\n", r, g, b, c);
-#endif
-        
         if (currentMillis - delayMillis >= 10) { // only run  after slight delay
           switch(servoCase) {
             case 0: // collector arm base position
               ledcWrite(CollectorServoChannel, degreesToDutyCycle(CollectorAngle)); // open position
               ledcWrite(ArmServo1_Channel, degreesToDutyCycle(DroppedAngle1));// right servo top position
               ledcWrite(ArmServo2_Channel, degreesToDutyCycle(DroppedAngle2));// left servo top position
-              if (onGround && currentMillis - swingingMillis >= 6000) {
+              if (onGround && currentMillis - swingingMillis >= 3000) {
                 servoCase = 1;
-              } else if (currentMillis - collectorMillis >= 22000) {
+              } else if (currentMillis - collectorMillis >= 9000) {
                 onGround = false;
                 servoCase = 1;
               }
@@ -440,6 +435,7 @@ void loop() {
                 if (onGround) {
                   servoCase = 2;
                 } else {
+                  driveIndex = 0;
                   servoCase = 3;
                 }
               } else {
@@ -465,12 +461,12 @@ void loop() {
               if (Arm1_Angle >= LiftedAngle1) {
                 Arm1_Angle = LiftedAngle1;
                 Arm2_Angle = LiftedAngle2;
-                delayMillis = currentMillis + 3000;
+                delayMillis = currentMillis;
                 servoCase = 4;
               } else {
-                delayMillis = currentMillis;
-                Arm1_Angle += 0.5; // rotational speed of the servo arms movement
-                Arm2_Angle -= 0.5; // rotational speed of the servo arms movement
+                driveIndex = 0;
+                Arm1_Angle += 1; // rotational speed of the servo arms movement
+                Arm2_Angle -= 1; // rotational speed of the servo arms movement
               }
               ledcWrite(ArmServo1_Channel, degreesToDutyCycle(Arm1_Angle));// right servo top position
               ledcWrite(ArmServo2_Channel, degreesToDutyCycle(Arm2_Angle));// left servo top position
@@ -481,15 +477,22 @@ void loop() {
                 Arm1_Angle = DroppedAngle1;
                 Arm2_Angle = DroppedAngle2;
                 collectorMillis = currentMillis;
+                delayMillis = currentMillis;
                 onGround = true;
                 servoCase = 0;
+                driveIndex = 1;
               } else {
-                delayMillis = currentMillis;
-                Arm1_Angle -= 0.5; // rotational speed of the servo arms movement
-                Arm2_Angle += 0.5; // rotational speed of the servo arms movement
+                Arm1_Angle -= 1; // rotational speed of the servo arms movement
+                Arm2_Angle += 1; // rotational speed of the servo arms movement
               }
               ledcWrite(ArmServo1_Channel, degreesToDutyCycle(Arm1_Angle));// right servo top position
               ledcWrite(ArmServo2_Channel, degreesToDutyCycle(Arm2_Angle));// left servo top position
+              break;
+            
+            case 5:
+              ledcWrite(CollectorServoChannel, degreesToDutyCycle(ClosedAngle));
+              ledcWrite(ArmServo1_Channel, degreesToDutyCycle(LiftedAngle1));// right servo top position
+              ledcWrite(ArmServo2_Channel, degreesToDutyCycle(LiftedAngle2));// left servo top position
               break;
           }
         }

@@ -61,6 +61,7 @@ long degreesToDutyCycle(int deg);
 #define SMART_LED 21           // when DIP Switch S1-4 is on, Smart LED is connected to pin 23 GPIO21 (J21)
 #define SMART_LED_COUNT 1      // number of SMART LEDs in use
 #define IR_DETECTOR 14         // GPIO14 pin 17 (J14) IR detector input
+#define PRINT_COLOUR
 
 // Constants
 const int cDisplayUpdate = 100;           // update interval for Smart LED in milliseconds
@@ -75,44 +76,20 @@ const int cSCL               = 48;                    // GPIO pin for I2C clock
 const int cTCSLED            = 14;                    // GPIO pin for LED on TCS34725
 const int cLEDSwitch         = 46;                    // DIP switch S1-2 controls LED on TCS32725   
 
-//const int CollectorServoPin       = 39;
-//const int ArmServo1_Pin             = 40;
-//const int ArmServo2_Pin             = 41;
-const int AccepterServoPin          = 41;     // Do not think this pin works for servos
+const int DoorServoPin          = 41;     // Do not think this pin works for servos
 const int GumballServoPin         = 42;                 // GPIO pin for servo motor
-//const int CollectorServoChannel       = 4;
-//const int ArmServo1_Channel         = 7;
-//const int ArmServo2_Channel         = 5;
-const int AccepterServoChannel      = 6;                  // PWM channel used for the RC servo motor 
+const int DoorServoChannel      = 6;                  // PWM channel used for the RC servo motor 
 const int GumballServoChannel      = 7;                  // PWM channel used for the RC servo motor 
+const long ArmTiming = 15000;
 
 const int cRightAdjust = 0;
 const int cLeftAdjust = 2;
 const long cCountsRev = 1096;
 const double distancePerRev = 13.8;  //circumference of the wheels in cm
 
-
 const float pi = 3.14159;                                                        // pi is used to calculate circumference of a wheel based on its diameter
 const int cDist = cCountsRev / (4.2 * pi);                                      // this is the calculated unit length to travel
 int pauseTime = 0;                                                             // used to determine when to pause the robots motion for a moment after return to its start position
-
-// set servo limits
-const float OpenAngle = 180;
-const float ClosedAngle = 70;
-const float LiftedAngle1 = 145;
-const float DroppedAngle1 = 15;
-const float LiftedAngle2 = 0;
-const float DroppedAngle2 = 130;
-
-float CollectorAngle = OpenAngle; // set the initial open position
-float Arm1_Angle = DroppedAngle1; // set the initial ground position
-float Arm2_Angle = DroppedAngle2; // set the initial ground position
-boolean closing = false;
-boolean opening = false;
-boolean lifting = false;
-boolean dropping = false;
-
-int servoCase = 0;
 
 //=====================================================================================================================
 
@@ -145,13 +122,17 @@ int servoPos;                                      // desired servo angle
 unsigned long currentMillis = 0;    // Stores the current time
 unsigned long previousMillis = 0;  // Store the last time the action was executed
 unsigned long newMillis = 0;
+unsigned long delayMillis = 0;
 unsigned long collectorMillis = 0; 
 unsigned long armMillis = 0;
 unsigned long swingingMillis = 0;
-unsigned long delayMillis = 0;
+unsigned long resetMillis = 0;
 bool change = false;
 bool arm = false;// tells us if the collector arm is closed or open
 bool onGround = true;
+int gumballIndex = 0;
+int baseState = 45;
+bool green = false;
 
 // Declare SK6812 SMART LED object
 //   Argument 1 = Number of LEDs (pixels) in use
@@ -228,22 +209,13 @@ void setup() {
   }
   
   //set up for servo
-  pinMode(AccepterServoPin, OUTPUT);                      // configure servo GPIO for output
+  pinMode(DoorServoPin, OUTPUT);                      // configure servo GPIO for output
   pinMode(GumballServoPin, OUTPUT);
-  //pinMode(ArmServo1_Pin, OUTPUT);
-  //pinMode(ArmServo2_Pin, OUTPUT);
-  //pinMode(CollectorServoPin, OUTPUT);
-  ledcSetup(AccepterServoChannel, 50, 14);                // setup for channel for 50 Hz, 14-bit resolution
+  ledcSetup(DoorServoChannel, 50, 14);                // setup for channel for 50 Hz, 14-bit resolution
   ledcSetup(GumballServoChannel, 50, 14);                // setup for channel for 50 Hz, 14-bit resolution
-  //ledcSetup(ArmServo1_Channel, 50, 14);
-  //ledcSetup(ArmServo2_Channel, 50, 14);
-  //ledcSetup(CollectorServoChannel, 50, 14);
   
-  ledcAttachPin(AccepterServoPin, AccepterServoChannel);         // assign servo pin to servo channel
+  ledcAttachPin(DoorServoPin, DoorServoChannel);         // assign servo pin to servo channel
   ledcAttachPin(GumballServoPin, GumballServoChannel);
-  //ledcAttachPin(CollectorServoPin, CollectorServoChannel);
-  //ledcAttachPin(ArmServo1_Pin, ArmServo1_Channel);
-  //ledcAttachPin(ArmServo2_Pin, ArmServo2_Channel);
 
    //set up of push button
   pinMode(0, INPUT_PULLUP);
@@ -301,7 +273,7 @@ void loop() {
         if (modePBDebounce >= 1025) {           // if pushbutton was released for 25 mS
           modePBDebounce = 0;                   // reset debounce timer count
           robotModeIndex++;                     // switch to next mode
-          robotModeIndex = robotModeIndex & 7;  // keep mode index between 0 and 7
+          robotModeIndex = robotModeIndex & 1;  // keep mode index between 0 and 7
           timerCount3sec = 0;                   // reset 3 second timer count
           timeUp3sec = false;                   // reset 3 second timer
         }
@@ -314,11 +286,6 @@ void loop() {
     // modes
     // 0 = Default after power up/reset. Robot is stopped.
     // 1 = Press mode button once to enter.        Run robot
-    // 2 = Press mode button twice to enter.       // empty
-    // 3 = Press mode button three times to enter. // empty
-    // 4 = Press mode button four times to enter.  // empty
-    // 5 = Press mode button five times to enter.  // empty
-    // 6 = Press mode button six times to enter.   // empty
     switch (robotModeIndex) {
       case 0:  // Robot stopped
         Bot.Stop("D1");
@@ -333,8 +300,6 @@ void loop() {
       case 1:              // Run robot
         // Read pot to update drive motor speed
         pot = analogRead(POT_R1);
-        //leftDriveSpeed = map(pot, 0, 4095, cMinPWM, cMaxPWM) - cLeftAdjust;
-        //rightDriveSpeed = map(pot, 0, 4095, cMinPWM, cMaxPWM) - cRightAdjust;
         leftDriveSpeed = cMaxPWM - cLeftAdjust;
         rightDriveSpeed = cMaxPWM - cRightAdjust;
 #ifdef DEBUG_DRIVE_SPEED
@@ -348,151 +313,63 @@ void loop() {
           timeUp200msec = false;              // reset 200 ms timer
           LeftEncoder.getEncoderRawCount();   // read left encoder count
           RightEncoder.getEncoderRawCount();  // read right encoder count
-          Serial.print(F("Left Encoder count = "));
-          Serial.print(LeftEncoder.lRawEncoderCount);
-          Serial.print(F("  Right Encoder count = "));
-          Serial.print(RightEncoder.lRawEncoderCount);
-          Serial.print("\n");
-
-          Serial.print("target: ");
-          Serial.println(target);
         }
-#endif
-        if (motorsEnabled) {          // run motors only if enabled
-          switch (driveIndex) {     // cycle through drive states
-            case 0: // stop robot
-              Bot.Stop("D1");
-              driveIndex = 1;
-              break;
-
-            case 1:
-              Bot.Forward("D1", rightDriveSpeed, leftDriveSpeed);
-              if (abs(LeftEncoder.lRawEncoderCount) >= cDist * 50) {
-                LeftEncoder.clearEncoder();
-                RightEncoder.clearEncoder();
-                driveIndex = 2;
-              }
-              break;
-
-            case 2:
-              Bot.Right("D1", rightDriveSpeed, leftDriveSpeed);
-              if (abs(LeftEncoder.lRawEncoderCount) >= cDist * 6 * pi) {
-                LeftEncoder.clearEncoder();
-                RightEncoder.clearEncoder();
-                if (pauseTime == 4) {
-                  driveIndex = 0;
-                } else {
-                  driveIndex = 1;
-                }
-              }
-              pauseTime++;
-              break;
-          }
-        } else {  // stop when motors are disabled
-          Bot.Stop("D1");
-        }
-
-        // Check if it's time to perform the action
-        if (currentMillis - previousMillis >= 3000) {
-          // Save the last time the action was executed
-          previousMillis = currentMillis;
-          change = true;
-          ledcWrite(AccepterServoChannel, degreesToDutyCycle(90));
-        } else if (change && currentMillis - previousMillis >= 100){
-          ledcWrite(AccepterServoChannel, degreesToDutyCycle(180));
-          change = false;
-        }
-        
+#endif        
         digitalWrite(cTCSLED, !digitalRead(cLEDSwitch));    // turn on onboard LED if switch state is low (on position)
         if (tcsFlag) {                                      // if colour sensor initialized
           tcs.getRawData(&r, &g, &b, &c);                   // get raw RGBC values
-          if (g > r && g > b && g > 60 && g < 90 && c < 200 ){//this indiactes that the color sensor has found a green gem
-            ledcWrite(GumballServoChannel, degreesToDutyCycle(0)); // turn to sorted side
-            newMillis = currentMillis;
-            Serial.printf("green detected");
+          if (currentMillis - resetMillis >= 1000) { // only run  after slight delay
+            switch (gumballIndex) {
+              case 0:
+                ledcWrite(GumballServoChannel, degreesToDutyCycle(baseState)); // Gumball base state
+                if (currentMillis - newMillis >= 2000) {
+                  if (g > r && g > b && g > 60 && g < 90 && c < 190 && c > 135) { //this indiactes that the color sensor has found a green gem
+                    Serial.printf("green detected________________________________________________");
+                    green = true;
+                  } else {
+                    green = false;
+                  }
+                  gumballIndex = 1;
+                  delayMillis = currentMillis;
+                }
+                break;
 
-          } 
-          else if(currentMillis - newMillis >= 250){
-            ledcWrite(GumballServoChannel, degreesToDutyCycle(180));
+              case 1:
+                ledcWrite(GumballServoChannel, degreesToDutyCycle(77)); // acceptor state
+                if (green) {
+                  gumballIndex = 2;
+                } else {
+                  gumballIndex = 3;
+                }
+                break;
+              
+              case 2:
+                ledcWrite(GumballServoChannel, degreesToDutyCycle(0)); // Gumball green bin state
+                newMillis = currentMillis;
+                gumballIndex = 0;
+                baseState = 45;
+                break;
+
+              case 3:
+                ledcWrite(GumballServoChannel, degreesToDutyCycle(170)); // Gumball garbage bin state
+                newMillis = currentMillis;
+                gumballIndex = 0;
+                baseState = 120;
+                break;
+            }
+            resetMillis = currentMillis;
           }
         } 
+
+        if (currentMillis >= 100000) { // open door when path is complete (i.e. at base station)
+          ledcWrite(DoorServoChannel, degreesToDutyCycle(90)); // Open Door and drop gems into colletion container
+        } else {
+          ledcWrite(DoorServoChannel, degreesToDutyCycle(0));
+        }
+
 #ifdef PRINT_COLOUR            
             Serial.printf("R: %d, G: %d, B: %d, C %d\n", r, g, b, c);
 #endif
-        /*
-        if (currentMillis - delayMillis >= 10) { // only run  after slight delay
-          switch(servoCase) {
-            case 0: // collector arm base position
-              ledcWrite(CollectorServoChannel, degreesToDutyCycle(CollectorAngle)); // open position
-              ledcWrite(ArmServo1_Channel, degreesToDutyCycle(DroppedAngle1));// right servo top position
-              ledcWrite(ArmServo2_Channel, degreesToDutyCycle(DroppedAngle2));// left servo top position
-              if (onGround && currentMillis - swingingMillis >= 6000) {
-                servoCase = 1;
-              } else if (currentMillis - collectorMillis >= 22000) {
-                onGround = false;
-                servoCase = 1;
-              }
-              break;
-
-            case 1: // collector arm closing
-              if (CollectorAngle <= ClosedAngle) {
-                CollectorAngle = ClosedAngle;
-                if (onGround) {
-                  servoCase = 2;
-                } else {
-                  servoCase = 3;
-                }
-              } else {
-                delayMillis = currentMillis;
-                CollectorAngle -= 0.5; // rotational speed of the servo arms movement
-              }
-              ledcWrite(CollectorServoChannel, degreesToDutyCycle(CollectorAngle));
-              break;
-
-            case 2: // collector arm opening
-              if (CollectorAngle >= OpenAngle) {
-                CollectorAngle = OpenAngle;
-                swingingMillis = currentMillis;
-                servoCase = 0;
-              } else {
-                delayMillis = currentMillis;
-                CollectorAngle += 0.5; // rotational speed of the servo arms movement
-              }
-              ledcWrite(CollectorServoChannel, degreesToDutyCycle(CollectorAngle));
-              break;
-
-            case 3: // lift scoop
-              if (Arm1_Angle >= LiftedAngle1) {
-                Arm1_Angle = LiftedAngle1;
-                Arm2_Angle = LiftedAngle2;
-                delayMillis = currentMillis + 3000;
-                servoCase = 4;
-              } else {
-                delayMillis = currentMillis;
-                Arm1_Angle += 0.5; // rotational speed of the servo arms movement
-                Arm2_Angle -= 0.5; // rotational speed of the servo arms movement
-              }
-              ledcWrite(ArmServo1_Channel, degreesToDutyCycle(Arm1_Angle));// right servo top position
-              ledcWrite(ArmServo2_Channel, degreesToDutyCycle(Arm2_Angle));// left servo top position
-              break;
-
-            case 4: // drop scoop
-              if (Arm1_Angle <= DroppedAngle1) {
-                Arm1_Angle = DroppedAngle1;
-                Arm2_Angle = DroppedAngle2;
-                collectorMillis = currentMillis;
-                onGround = true;
-                servoCase = 0;
-              } else {
-                delayMillis = currentMillis;
-                Arm1_Angle -= 0.5; // rotational speed of the servo arms movement
-                Arm2_Angle += 0.5; // rotational speed of the servo arms movement
-              }
-              ledcWrite(ArmServo1_Channel, degreesToDutyCycle(Arm1_Angle));// right servo top position
-              ledcWrite(ArmServo2_Channel, degreesToDutyCycle(Arm2_Angle));// left servo top position
-              break;
-          }
-        } */
         break;
     }
 
@@ -530,7 +407,6 @@ void setTarget(int motor, int dir, double distance) {
     }
   }
 }
-
 
 // Set colour of Smart LED depending on robot mode (and update brightness)
 void Indicator() {
